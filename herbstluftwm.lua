@@ -3,8 +3,6 @@
 --- a set of libraries to control herbstluftwm
 -- @module herbstluftwm
 
-local DEBUG = true
-
 local command = {}
 command.__index = command
 
@@ -16,6 +14,11 @@ end
 
 local function join_cmd( cmd, args, char )
   char = char or " "
+
+  if type(args) == "string" then
+    args = {args}
+  end
+
   if #args == 0 then
     return cmd
   end
@@ -34,9 +37,9 @@ end
 
 local function to_signed_string(number)
   if number > 0 then
-    number = "+" .. tostring(number)
+    return "+" .. tostring(number)
   else
-    number = tostring(number)
+    return tostring(number)
   end
 end
 
@@ -67,7 +70,7 @@ end
 -- @param quote if not false then add quotes around the argument
 function command:arg(arg, quote)
   if arg == nil then
-    return
+    return self
   end
 
   if quote then
@@ -104,6 +107,7 @@ end
 
 local hwm = {}
 hwm.__index = hwm
+hwm.DEBUG = false
 hwm.herbstclient = "herbstclient"
 hwm.mod = "Mod4"
 hwm.split_factor = 0.5
@@ -117,7 +121,7 @@ function hwm.new(init)
 end
 
 function hwm:hc( args )
-  if DEBUG then
+  if self.DEBUG then
     local args_concat = table.concat( args, "' '" )
     local cmd = self.herbstclient .. " '" .. args_concat .. "'"
 
@@ -125,7 +129,7 @@ function hwm:hc( args )
   else
     local cmd = join_cmd( self.herbstclient, args )
 
-    os.execute(cmd)
+    assert(os.execute(cmd))
   end
 end
 
@@ -259,6 +263,22 @@ function hwm:mousebind( index, command )
     :cmd_arg(command)
 end
 
+function hwm:mouse_move()
+  return cmd("move")
+end
+
+function hwm:mouse_resize()
+  return cmd("resize")
+end
+
+function hwm:mouse_zoom()
+  return cmd("zoom")
+end
+
+function hwm:mouse_call( command )
+  return cmd("call"):cmd_arg( command )
+end
+
 function hwm:cycle_monitor()
   return cmd("cycle_monitor")
 end
@@ -314,27 +334,70 @@ end
 
 hwm_utils.DIRECTIONS = { "left", "down", "up", "right" }
 hwm_utils.DEFAULT_MOVE_KEYS = {
-  left  = {"left", "h"},
-  down  = {"down", "j"},
-  up    = {"up", "k"},
-  right = {"right", "l"}
+  left  = {"Left", "h"},
+  down  = {"Down", "j"},
+  up    = {"Up", "k"},
+  right = {"Right", "l"}
 }
 hwm_utils.DEFAULT_MOVE_MOD = "Shift"
+hwm_utils.DEFAULT_RESIZE_MOD = "Control"
 
-function hwm_utils:setup_movement( move_keys, move_modifier )
+local mod_key = {}
+function mod_key.__add( mod_table, key )
+  table.insert( mod_table, key )
+  return mod_table
+end
+function mod_key.new( key )
+  local self = {key}
+  setmetatable(self, mod_key)
+  return self
+end
+
+function hwm_utils:shift()
+  return mod_key.new( "Shift" )
+end
+
+function hwm_utils:control()
+  return mod_key.new( "Control" )
+end
+
+function hwm_utils:setup_keybindings( keybindings )
+  for keys, cmd in pairs(keybindings) do
+    self.hwm:run( self.hwm:keybind( keys, cmd ) )
+  end
+end
+
+function hwm_utils:setup_mousebindings( mousebindings )
+  for mouses, cmd in pairs(mousebindings) do
+    self.hwm:run( self.hwm:mousebind( mouses, cmd ) )
+  end
+end
+
+function hwm_utils:setup_directional( move_keys, callback )
   move_keys = move_keys or hwm_utils.DEFAULT_MOVE_KEYS
-  move_modifier = move_modifier or hwm_utils.DEFAULT_MOVE_MOD
-
   for _, dir in ipairs(hwm_utils.DIRECTIONS) do
     for _, key in ipairs(move_keys[dir]) do
+      callback( key, dir )
+    end
+  end
+end
 
+function hwm_utils:setup_movement( move_keys, move_modifier )
+  move_modifier = move_modifier or hwm_utils.DEFAULT_MOVE_MOD
+
+  self:setup_directional( move_keys, function( key, dir)
       self.hwm:run_all {
         self.hwm:keybind( {key}, self.hwm:focus( dir ) ),
         self.hwm:keybind( {move_modifier, key}, self.hwm:shift( dir ) )
       }
+  end)
+end
 
-    end
-  end
+function hwm_utils:setup_resizing( resize_keys, resize_modifier )
+  resize_modifier = resize_modifier or hwm_utils.DEFAULT_RESIZE_MOD
+  self:setup_directional( resize_keys, function( key, dir )
+    self.hwm:run( self.hwm:keybind( {resize_modifier, key}, self.hwm:resize( dir ) ) )
+  end)
 end
 
 function hwm_utils:tag( tag, key )
@@ -342,6 +405,10 @@ function hwm_utils:tag( tag, key )
 end
 
 function hwm_utils:setup_tags(tag_config, default_tag)
+  if default_tag ~= nil then
+    self.hwm:run( self.hwm:rename( "default", default_tag ) )
+  end
+
   for _, cfg in pairs(tag_config) do
     local add_cmd = self.hwm:add_tag(cfg.tag)
     local use_cmd = self.hwm:use_tag(cfg.tag)
@@ -350,13 +417,9 @@ function hwm_utils:setup_tags(tag_config, default_tag)
     self.hwm:run_all { 
       add_cmd,
       self.hwm:keybind( {cfg.key}, use_cmd ),
-      self.hwm:keybind( {"Shift", cfg.key}, move_cmd )
+      self.hwm:keybind( {"Shift", cfg.key}, move_cmd ) -- TODO make shift configurable
     }
 
-  end
-
-  if default_tag ~= nil then
-    self.hwm:run( self.hwm:rename( "default", default_tag ) )
   end
 end
 
@@ -368,25 +431,7 @@ function hwm_utils:reset()
   }
 end
 
-
-h = hwm.new()
-hu = hwm_utils.new( h )
-
-hu:reset()
-
-h:run_all {
-  h:keybind( {"Shift", "e"}, h:spawn( "/home/alexx/.config/herbstluftwm/nagquit.sh" ) ),
-  h:keybind( {"Shift", "r"}, h:reload() ),
-  h:keybind( {"Shift", "q"}, h:close() ),
-  h:keybind( {"Return"}, h:spawn( "urxvt" ) )
+return {
+  hwm = hwm, 
+  hwm_utils = hwm_utils
 }
-
-hu:setup_tags( {
-  hu:tag( "shell", "1" ),
-  hu:tag( "internet", "2" ),
-  hu:tag( "comm", "3" ),
-  hu:tag( "doc", "F1" )
-}, "shell" )
-
-hu:setup_movement()
-
