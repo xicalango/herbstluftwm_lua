@@ -126,15 +126,19 @@ function hwm:hc( args )
     local cmd = self.herbstclient .. " '" .. args_concat .. "'"
 
     print(cmd)
+    return ""
   else
     local cmd = join_cmd( self.herbstclient, args )
 
-    assert(os.execute(cmd))
+    local p = assert(io.popen(cmd, "r"))
+    local content = p:read("*all")
+    assert(p:close())
+    return content
   end
 end
 
 function hwm:run( cmd )
-  self:hc( cmd:build_list() )
+  return self:hc( cmd:build_list() )
 end
 
 function hwm:run_all( cmds )
@@ -315,9 +319,12 @@ function hwm:detect_monitors()
   return cmd("detect_monitors")
 end
 
-
 function hwm:rename( old_name, new_name )
   return cmd("rename"):arg(old_name):arg(new_name)
+end
+
+function hwm:tag_status( monitor )
+  return cmd("tag_status"):arg(monitor)
 end
 
 local hwm_utils = {}
@@ -343,10 +350,12 @@ hwm_utils.DEFAULT_MOVE_MOD = "Shift"
 hwm_utils.DEFAULT_RESIZE_MOD = "Control"
 
 local mod_key = {}
+
 function mod_key.__add( mod_table, key )
   table.insert( mod_table, key )
   return mod_table
 end
+
 function mod_key.new( key )
   local self = {key}
   setmetatable(self, mod_key)
@@ -359,6 +368,45 @@ end
 
 function hwm_utils:control()
   return mod_key.new( "Control" )
+end
+
+function hwm_utils:get_tag_status( monitor )
+  local status_line = self.hwm:run( self.hwm:tag_status( monitor ) )
+
+  local tag_status_table = {}
+
+  for status in string.gmatch( status_line, '([^\t]+)') do
+    local tag_status = {}
+
+    tag_status.status_char = string.sub( status, 1, 1 )
+    tag_status.tag_name = string.sub( status, 2 )
+
+    if tag_status.status_char == "." then
+      tag_status.status = "empty"
+    elseif tag_status.status_char == ":" then
+      tag_status.status = "not_empty"
+    elseif tag_status.status_char == "+" then
+      tag_status.status = "viewed_not_focused"
+      tag_status.monitor = monitor or "same"
+    elseif tag_status.status_char == "#" then
+      tag_status.status = "viewed_and_focused"
+      tag_status.monitor = monitor or "same"
+    elseif tag_status.status_char == "-" then
+      tag_status.status = "viewed_not_focused"
+      tag_status.monitor = "different"
+    elseif tag_status.status_char == "%" then
+      tag_status.status = "viewed_and_focused"
+      tag_status.monitor = "different"
+    elseif tag_status.status_char == "!" then
+      tag_status.status = "urgent"
+    end
+
+    if tag_status.status ~= nil then
+      table.insert( tag_status_table, tag_status )
+    end
+  end
+
+  return tag_status_table
 end
 
 function hwm_utils:setup_keybindings( keybindings )
