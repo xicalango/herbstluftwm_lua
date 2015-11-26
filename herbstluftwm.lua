@@ -21,7 +21,7 @@ local function join_cmd( cmd, args, char )
   end
 
   local args_concat = table.concat( args, char )
-  return cmd .. " " .. args_concat
+  return cmd .. char .. args_concat
 end
 
 local function join_buttons( mod, buttons )
@@ -129,19 +129,14 @@ function hwm:hc( args )
   end
 end
 
+function hwm:run( cmd )
+  self:hc( cmd:build_list() )
+end
+
 function hwm:run_all( cmds )
   for i, cmd in ipairs(cmds) do
     self:hc( cmd:build_list() )
   end
-end
-
-
-function hwm:reset()
-  self:run_all {
-    self:emit_hook{ "reload" },
-    self:keyunbind( "--all" ),
-    self:mouseunbind( "--all" )
-  }
 end
 
 function hwm:emit_hook( arguments )
@@ -229,17 +224,18 @@ function hwm:step_index( step )
   return self:use_index( to_signed_string( step ) )
 end
 
-function hwm:use_index( index )
-  return cmd("use_index"):arg(index)
+function hwm:use_index( index, args )
+  args = args or {}
+  return cmd("use_index"):arg(index):all_args( args )
 end
 
 function hwm:remove()
   return cmd("remove")
 end
 
-function hwm:cycle_layout(dir)
+function hwm:cycle_layout( dir )
   dir = dir or 1
-  return cmd("cycle_layout"):arg(1)
+  return cmd("cycle_layout"):arg(dir)
 end
 
 function hwm:floating(mode)
@@ -263,6 +259,18 @@ function hwm:mousebind( index, command )
     :cmd_arg(command)
 end
 
+function hwm:cycle_monitor()
+  return cmd("cycle_monitor")
+end
+
+function hwm:cycle( dir )
+  return cmd("cycle"):arg( to_signed_string(dir) )
+end
+
+function hwm:cycle_all( dir )
+  return cmd("cycle_all"):arg( to_signed_string(dir) )
+end
+
 function hwm:set(variable, value)
   return cmd("set"):arg(variable):arg_quote(value)
 end
@@ -271,40 +279,114 @@ function hwm:attr(variable, value)
   return cmd("attr"):arg(variable):arg(value)
 end
 
-function hwm:setup_tags(tag_config)
-  for _, cfg in pairs(tag_config) do
-    local add_cmd = self:add_tag(cfg.tag)
-    local use_cmd = self:use_tag(cfg.tag)
-    local move_cmd = self:move_to_tag(cfg.tag)
+function hwm:unrule( arg )
+  return cmd("unrule"):arg( arg )
+end
 
-    self:run_all { 
-      add_cmd,
-      self:keybind( {cfg.key}, use_cmd ),
-      self:keybind( {"Shift", cfg.key}, move_cmd )
-    }
+function hwm:rule( args )
+  return cmd("rule"):all_args( args )
+end
 
+function hwm:unlock()
+  return cmd("unlock")
+end
+
+function hwm:detect_monitors()
+  return cmd("detect_monitors")
+end
+
+
+function hwm:rename( old_name, new_name )
+  return cmd("rename"):arg(old_name):arg(new_name)
+end
+
+local hwm_utils = {}
+hwm_utils.__index = hwm_utils
+
+function hwm_utils.new( hwm_inst )
+  local self = {}
+  setmetatable( self, hwm_utils )
+
+  self.hwm = hwm_inst or hwm.new()
+
+  return self
+end
+
+hwm_utils.DIRECTIONS = { "left", "down", "up", "right" }
+hwm_utils.DEFAULT_MOVE_KEYS = {
+  left  = {"left", "h"},
+  down  = {"down", "j"},
+  up    = {"up", "k"},
+  right = {"right", "l"}
+}
+hwm_utils.DEFAULT_MOVE_MOD = "Shift"
+
+function hwm_utils:setup_movement( move_keys, move_modifier )
+  move_keys = move_keys or hwm_utils.DEFAULT_MOVE_KEYS
+  move_modifier = move_modifier or hwm_utils.DEFAULT_MOVE_MOD
+
+  for _, dir in ipairs(hwm_utils.DIRECTIONS) do
+    for _, key in ipairs(move_keys[dir]) do
+
+      self.hwm:run_all {
+        self.hwm:keybind( {key}, self.hwm:focus( dir ) ),
+        self.hwm:keybind( {move_modifier, key}, self.hwm:shift( dir ) )
+      }
+
+    end
   end
 end
 
-function hwm.tag(tag, key)
+function hwm_utils:tag( tag, key )
   return {tag = tag, key = key}
 end
 
+function hwm_utils:setup_tags(tag_config, default_tag)
+  for _, cfg in pairs(tag_config) do
+    local add_cmd = self.hwm:add_tag(cfg.tag)
+    local use_cmd = self.hwm:use_tag(cfg.tag)
+    local move_cmd = self.hwm:move_to_tag(cfg.tag)
+
+    self.hwm:run_all { 
+      add_cmd,
+      self.hwm:keybind( {cfg.key}, use_cmd ),
+      self.hwm:keybind( {"Shift", cfg.key}, move_cmd )
+    }
+
+  end
+
+  if default_tag ~= nil then
+    self.hwm:run( self.hwm:rename( "default", default_tag ) )
+  end
+end
+
+function hwm_utils:reset()
+  self.hwm:run_all {
+    self.hwm:emit_hook{ "reload" },
+    self.hwm:keyunbind( "--all" ),
+    self.hwm:mouseunbind( "--all" )
+  }
+end
+
+
 h = hwm.new()
-h:reset()
+hu = hwm_utils.new( h )
+
+hu:reset()
 
 h:run_all {
   h:keybind( {"Shift", "e"}, h:spawn( "/home/alexx/.config/herbstluftwm/nagquit.sh" ) ),
   h:keybind( {"Shift", "r"}, h:reload() ),
   h:keybind( {"Shift", "q"}, h:close() ),
-  h:keybind( {"Return"}, h:spawn( "urxvt" ) ),
-  h:keybind( {"Left"}, h:focus( "left" ) )
+  h:keybind( {"Return"}, h:spawn( "urxvt" ) )
 }
 
-h:setup_tags {
-  h.tag( "shell", "1" ),
-  h.tag( "internet", "2" ),
-  h.tag( "comm", "3" ),
-  h.tag( "doc", "F1" )
-}
+hu:setup_tags( {
+  hu:tag( "shell", "1" ),
+  hu:tag( "internet", "2" ),
+  hu:tag( "comm", "3" ),
+  hu:tag( "doc", "F1" )
+}, "shell" )
+
+hu:setup_movement()
 
