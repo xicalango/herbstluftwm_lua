@@ -1,10 +1,43 @@
 #!/usr/bin/env lua
 
+--- a set of libraries to control herbstluftwm
+-- @module herbstluftwm
+
+local DEBUG = true
+
 local command = {}
 command.__index = command
 
+local function using( resource, callback )
+  local result = callback( resource )
+  resource:close()
+  return result
+end
+
+local function join_cmd( cmd, args, char )
+  char = char or " "
+  if #args == 0 then
+    return cmd
+  end
+
+  local args_concat = table.concat( args, char )
+  return cmd .. " " .. args_concat
+end
+
+local function join_buttons( mod, buttons )
+  return join_cmd( mod, buttons, "-" )
+end
+
 local function cmd(cmd)
   return command.new(cmd)
+end
+
+local function to_signed_string(number)
+  if number > 0 then
+    number = "+" .. tostring(number)
+  else
+    number = tostring(number)
+  end
 end
 
 --- creates a new command builder for the given cmd
@@ -20,14 +53,23 @@ function command.new(cmd)
   return self
 end
 
-
-function command:args( args )
+--- iterate the args list and add each element as an argument
+function command:all_args( args )
   for _, arg in ipairs(args) do
     self:arg( arg )
   end
+
+  return self
 end
 
+--- add the given argument
+-- @param arg the argument to add
+-- @param quote if not false then add quotes around the argument
 function command:arg(arg, quote)
+  if arg == nil then
+    return
+  end
+
   if quote then
     arg = '"' .. arg .. '"'
   end
@@ -35,83 +77,94 @@ function command:arg(arg, quote)
   return self
 end
 
+--- shortcut to command:arg(arg, true)
+-- @see command:arg
 function command:arg_quote(arg)
   return self:arg(arg, true)
 end
 
-function command:command( command )
-  return self:arg( command:get_cmd() )
+function command:cmd_arg( command )
+  return self:arg( command:build() )
 end
 
-function command:get_cmd()
-  if #self.args == 0 then
-    return self.cmd
-  end
-
-  local args_concat = table.concat( self.args, " " )
-  return self.cmd .. " " .. args_concat
+function command:build()
+  return join_cmd( self.cmd, self.args )
 end
 
-function command:get_cmds()
-  local cmds = {}
-  table.insert( cmds, self.cmd )
-  for _,v in ipairs(self.args) do
+function command:build_list()
+  local cmds = { self.cmd }
+
+  for _, v in ipairs( self.args ) do
     table.insert( cmds, v )
   end
+
   return cmds
 end
 
 
 local hwm = {}
 hwm.__index = hwm
-hwm.HERBSTCLIENT = "herbstclient"
-hwm.MOD = "Mod4"
-hwm.SPLIT_FACTOR = 0.5
-hwm.RESIZE_STEP = 0.05
+hwm.herbstclient = "herbstclient"
+hwm.mod = "Mod4"
+hwm.split_factor = 0.5
+hwm.resize_step = 0.05
 
 function hwm.new(init)
-  local self = {}
-  setmetatable( self, hwm )
-
   init = init or {}
-  self.herbstclient = init.herbstclient or hwm.HERBSTCLIENT
-  self.mod = init.mod or hwm.MOD
-  self.split_factor = init.split_factor or hwm.SPLIT_FACTOR
-  self.resize_step = init.resize_step or hwm.RESIZE_STEP
+  setmetatable( init, hwm )
 
-  return self
+  return init
 end
 
-function hwm:hc(args)
-  local args_concat = table.concat( args, "' '" )
-  local cmd = self.herbstclient .. " '" .. args_concat .. "'"
+function hwm:hc( args )
+  if DEBUG then
+    local args_concat = table.concat( args, "' '" )
+    local cmd = self.herbstclient .. " '" .. args_concat .. "'"
 
-  print(cmd)
-end
+    print(cmd)
+  else
+    local cmd = join_cmd( self.herbstclient, args )
 
-function hwm:run_all( cmds )
-  for _, cmd in ipairs(cmds) do
-    self:hc(cmd:get_cmds())
+    os.execute(cmd)
   end
 end
 
+function hwm:run_all( cmds )
+  for i, cmd in ipairs(cmds) do
+    self:hc( cmd:build_list() )
+  end
+end
+
+
 function hwm:reset()
   self:run_all {
-    cmd("emit_hook"):arg("reload"),
-    cmd("keyunbind"):arg("--all"),
-    cmd("mouseunbind"):arg("--all")
+    self:emit_hook{ "reload" },
+    self:keyunbind( "--all" ),
+    self:mouseunbind( "--all" )
   }
 end
 
-function hwm:keybind( buttons, command )
-  local all_buttons = self.mod .. "-" .. table.concat( buttons, "-" )
-  return cmd("keybind")
-    :arg(all_buttons)
-    :command(command)
+function hwm:emit_hook( arguments )
+  return cmd("emit_hook"):all_args( arguments )
 end
 
-function hwm:emit_hook( hooks )
-  return cmd(
+function hwm:keyunbind( buttons )
+  if type(buttons) == "table" then
+    buttons = join_buttons( self.mod, buttons )
+  end
+
+  return cmd("keyunbind"):arg( buttons )
+end
+
+function hwm:mouseunbind( arg )
+  return cmd("mouseunbind"):arg( arg )
+end
+
+function hwm:keybind( buttons, command )
+  local all_buttons = join_buttons( self.mod, buttons )
+  return cmd("keybind")
+    :arg(all_buttons)
+    :cmd_arg(command)
 end
 
 function hwm:spawn( run_cmd )
@@ -143,14 +196,6 @@ function hwm:explode()
   return cmd("split"):arg("explode")
 end
 
-local function to_signed_string(number)
-  if number > 0 then
-    number = "+" .. tostring(number)
-  else
-    number = tostring(number)
-  end
-end
-
 function hwm:resize(dir, step)
   step = step or self.resize_step
   return cmd("resize"):arg(dir):arg( to_signed_string( step ) )
@@ -173,7 +218,11 @@ function hwm:load_tag_config(name, config)
 end
 
 function hwm:load_tag_config_from_file(name, config_path)
-  error("unimplemented")
+  local content = using( assert(io.open(config_path, "r")), function(f)
+    return f:read("*all")
+  end)
+
+  return self:load_tag_config( name, content )
 end
 
 function hwm:step_index( step )
@@ -211,7 +260,7 @@ end
 function hwm:mousebind( index, command )
   return cmd("mousebind")
     :arg(self.mod .. "-Button" .. index)
-    :command(command)
+    :cmd_arg(command)
 end
 
 function hwm:set(variable, value)
