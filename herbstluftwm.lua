@@ -31,8 +31,8 @@ local function join_buttons( mod, buttons )
   return join_cmd( mod, buttons, "-" )
 end
 
-local function cmd(cmd)
-  return command.new(cmd)
+local function cmd(...)
+  return command.new(...)
 end
 
 local function to_signed_string(number)
@@ -46,12 +46,13 @@ end
 --- creates a new command builder for the given cmd
 -- @param cmd command name
 -- @return a new command builder
-function command.new(cmd)
+function command.new(cmd, ignore_error)
   local self = {}
   setmetatable( self, command )
 
   self.cmd = cmd
   self.args = {}
+  self.ignore_error = ignore_error
 
   return self
 end
@@ -107,6 +108,7 @@ end
 
 local hwm = {}
 hwm.__index = hwm
+hwm.LOG = false
 hwm.DEBUG = false
 hwm.herbstclient = "herbstclient"
 hwm.mod = "Mod4"
@@ -120,7 +122,7 @@ function hwm.new(init)
   return init
 end
 
-function hwm:hc( args )
+function hwm:hc( args, ignore_error )
   if self.DEBUG then
     local args_concat = table.concat( args, "' '" )
     local cmd = self.herbstclient .. " '" .. args_concat .. "'"
@@ -130,20 +132,28 @@ function hwm:hc( args )
   else
     local cmd = join_cmd( self.herbstclient, args )
 
+    if hwm.LOG then print(cmd) end
+
     local p = assert(io.popen(cmd, "r"))
     local content = p:read("*all")
-    assert(p:close())
-    return content
+    local status = p:close()
+
+    if ignore_error then
+      return content, status
+    else
+      assert(status)
+      return content
+    end
   end
 end
 
 function hwm:run( cmd )
-  return self:hc( cmd:build_list() )
+  return self:hc( cmd:build_list(), cmd.ignore_error )
 end
 
 function hwm:run_all( cmds )
   for i, cmd in ipairs(cmds) do
-    self:hc( cmd:build_list() )
+    self:hc( cmd:build_list(), cmd.ignore_error )
   end
 end
 
@@ -170,7 +180,17 @@ function hwm:keybind( buttons, command )
     :cmd_arg(command)
 end
 
+function hwm:cmd( _cmd, ... )
+  return cmd(_cmd, ...)
+end
+
 function hwm:spawn( run_cmd )
+  local success, build_cmd = pcall(run_cmd.build, run_cmd)
+
+  if success then
+    run_cmd = build_cmd
+  end
+
   return cmd("spawn"):arg( run_cmd )
 end
 
@@ -410,9 +430,13 @@ function hwm_utils:get_tag_status( monitor )
 end
 
 function hwm_utils:setup_keybindings( keybindings )
-  for keys, cmd in pairs(keybindings) do
-    self.hwm:run( self.hwm:keybind( keys, cmd ) )
+  for _, kb in ipairs(keybindings) do
+    self.hwm:run( self.hwm:keybind( kb.keys, kb.cmd ) )
   end
+end
+
+function hwm_utils:keybind( keys, cmd )
+  return {keys=keys, cmd=cmd}
 end
 
 function hwm_utils:setup_mousebindings( mousebindings )
@@ -454,7 +478,9 @@ end
 
 function hwm_utils:setup_tags(tag_config, default_tag)
   if default_tag ~= nil then
-    self.hwm:run( self.hwm:rename( "default", default_tag ) )
+    local rename_cmd = self.hwm:rename( "default", default_tag )
+    rename_cmd.ignore_error = true
+    self.hwm:run( rename_cmd )
   end
 
   for _, cfg in pairs(tag_config) do
